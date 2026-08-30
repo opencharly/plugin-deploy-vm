@@ -391,6 +391,8 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 	}
 	willAutoBoot := !opts.DryRun && os.Getenv("CHARLY_DEPLOY_NO_AUTOBOOT") == ""
 	deferToAutoBoot = deferToAutoBoot && willAutoBoot
+	// Set when auto-boot actually ran `vm create`, which publishes the ssh stanza itself.
+	createdByAutoBoot := false
 	if !deferToAutoBoot {
 		sshPort, err = kit.ResolveVmSshPort(&vm, domainID, persistedPort)
 		if err != nil {
@@ -406,31 +408,12 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 		SSHPort:        sshPort,
 		Alias:          kit.VmSshAlias(domainID),
 		SSHKeyPath:     filepath.Join(stateDir, "id_ed25519"),
-		KnownHostsPath: filepath.Join(stateDir, "known_hosts"),
+		KnownHostsPath: knownHostsPathFor(vm.Source.Kind, stateDir),
 		StateDir:       stateDir,
 		PriorState:     prior,
 	}
 	if in.VM == nil {
 		return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: no resolved VmSpec in prepare input")
-	}
-
-	// (a) publish the managed ssh-config Host stanza + the Include line (host file I/O the co-located
-	// plugin does directly), so `ssh <alias>` resolves before any wait. Skipped when auto-boot's own
-	// `vm create` will be the ONE writer of both the port allocation and the stanza (deferToAutoBoot).
-	if !deferToAutoBoot {
-		if err := kit.WriteVmSshStanza(host.Home, kit.VmSshStanza{
-			Alias:          in.Alias,
-			Hostname:       "127.0.0.1",
-			Port:           in.SSHPort,
-			User:           in.SSHUser,
-			IdentityFile:   in.SSHKeyPath,
-			KnownHostsFile: in.KnownHostsPath,
-		}); err != nil {
-			return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: publish ssh-config stanza: %w", err)
-		}
-		if err := kit.EnsureSshConfigInclude(host.Home); err != nil {
-			return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: ensure ssh-config include: %w", err)
-		}
 	}
 
 	// (b) auto-boot: TCP-probe the SSH port; if unreachable, `charly vm build` + `charly vm create`
@@ -456,7 +439,43 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 			if _, err := vmCli(ctx, exec, false, false, "vm", "create", in.Entity, "--domain", domainIdentity(p)); err != nil {
 				return nil, fmt.Errorf("auto-boot create %s: %w", in.Entity, err)
 			}
+			createdByAutoBoot = true
 		}
+	}
+
+	// (b2) publish the managed ssh-config Host stanza + the Include line — but ONLY when `vm create`
+	// did not already do it.
+	//
+	// `vm create` publishes this stanza itself, and it is the AUTHORITY on its contents: it owns the
+	// per-domain state dir, the allocated port, and the source-kind-dependent known-hosts policy (an
+	// installer-ISO guest must record NO host key, because it changes SSH host identity exactly once
+	// when it reboots out of the live installer, and a key recorded before that makes it permanently
+	// unreachable). This function knows none of that.
+	//
+	// It used to write unconditionally whenever a port was already persisted, which is EVERY REBUILD
+	// — so on a rebuild it ran after `vm create` and silently replaced a correct stanza with one that
+	// records a host key again. The guest then became unreachable a few minutes later and the
+	// readiness gate below burned its whole cap. Measured on check-omarchy-iso-vm: the first add
+	// passed 13/13 and the rebuild in the SAME run failed after 13m11s.
+	//
+	// The old skip (deferToAutoBoot) conflated two different questions — "who ALLOCATES the port"
+	// and "who WRITES the stanza". Only the first depends on whether a port is persisted.
+	if shouldPublishStanza(deferToAutoBoot, createdByAutoBoot) {
+		if err := kit.WriteVmSshStanza(host.Home, kit.VmSshStanza{
+			Alias:          in.Alias,
+			Hostname:       "127.0.0.1",
+			Port:           in.SSHPort,
+			User:           in.SSHUser,
+			IdentityFile:   in.SSHKeyPath,
+			KnownHostsFile: in.KnownHostsPath,
+		}); err != nil {
+			return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: publish ssh-config stanza: %w", err)
+		}
+	}
+	// The Include line is idempotent and must exist on every path, including the one where `vm
+	// create` owns the stanza.
+	if err := kit.EnsureSshConfigInclude(host.Home); err != nil {
+		return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: ensure ssh-config include: %w", err)
 	}
 
 	// (c) guest-readiness waits over the host ssh surface (BEFORE the reverse channel serves a guest
@@ -722,4 +741,46 @@ func marshalReply(v any) (*pb.InvokeReply, error) {
 		return nil, err
 	}
 	return &pb.InvokeReply{ResultJson: b}, nil
+}
+
+// shouldPublishStanza answers whether prepare-venue may write the managed ssh-config stanza.
+//
+// It is a named function rather than an inline `&&` because the condition it replaced was wrong
+// in a way that was invisible at the call site: it read as "skip when auto-boot will write it"
+// but actually meant "skip when no port is persisted yet", and those diverge on every rebuild.
+//
+// The rule: `vm create` is the AUTHORITY on the stanza. prepare-venue writes it only when
+// `vm create` is not going to — never after it.
+func shouldPublishStanza(deferToAutoBoot, createdByAutoBoot bool) bool {
+	return !deferToAutoBoot && !createdByAutoBoot
+}
+
+// knownHostsPathFor decides which known_hosts file this VM's managed ssh alias records into.
+//
+// An installer-ISO guest must record NONE. It changes its SSH host identity exactly once: the
+// live installer environment brings up its own sshd with freshly generated host keys, the first
+// thing to connect pins that key under `accept-new`, and then the installer finishes and the
+// guest reboots into the INSTALLED system whose host keys are entirely different. Every
+// connection after that fails with "Host key verification failed", polling cannot recover, and
+// the readiness gate below burns its whole cap.
+//
+// Whether the doomed key is pinned at all is a RACE against the install finishing, which is why
+// this presents as intermittent rather than as a clean failure.
+//
+// /dev/null rather than a relaxed StrictHostKeyChecking: `accept-new` still applies, so the
+// first connection is accepted exactly as before and nothing is ever RECORDED to conflict with.
+// What is given up is host-key continuity for a per-domain loopback guest whose login key charly
+// generated itself — against a guest that is otherwise unusable.
+//
+// DUPLICATION, ACKNOWLEDGED: plugin-vm's publishVmSshAlias applies the same rule, because both
+// are writers of the same stanza. The single-owner version (a shared kit.VmKnownHostsFile) was
+// implemented and BLOCKED as a partial cutover — a shared function lands with zero callers, and
+// the consumers can only adopt it after it is tagged, so no single PR can both add it and use
+// it. Rather than leave the bug open behind a three-repo chain, the rule is expressed here too,
+// and TestKnownHostsPathFor names the other location so the pair is findable from either side.
+func knownHostsPathFor(sourceKind, stateDir string) string {
+	if sourceKind == "iso" {
+		return os.DevNull
+	}
+	return filepath.Join(stateDir, "known_hosts")
 }
