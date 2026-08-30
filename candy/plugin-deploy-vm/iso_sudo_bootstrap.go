@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -144,4 +145,61 @@ func isoInstallerPassword(vm *spec.ResolvedVm) string {
 		return ""
 	}
 	return vm.Source.Installer.Password
+}
+
+// IsoReadinessSSHArgs returns the ssh args to use for an iso VM's READINESS WAIT.
+//
+// An installer-driven VM changes its SSH host identity exactly once, mid-wait, and the
+// ordinary args cannot survive that:
+//
+//  1. the live installer environment brings up its own sshd with freshly generated host
+//     keys (Omarchy's ISO has cloud-init do this, visible on its console)
+//  2. the readiness probe connects, and StrictHostKeyChecking=accept-new PINS that key
+//  3. the installer finishes and the guest reboots into the INSTALLED system, whose host
+//     keys are entirely different
+//  4. every probe after that fails with "Host key for [...] has changed", forever — the
+//     poll burns its whole cap against a condition that CANNOT become true
+//
+// Measured end to end: the pin appears during the wait, and afterwards the managed alias
+// returns "Host key verification failed" while a connection with the pin removed reports
+// hostname=omarchy, root=btrfs, sshd=enabled.
+//
+// So the readiness wait — and ONLY the readiness wait — runs without consulting or writing
+// a known_hosts. Pinning during that window is not merely unhelpful, it is meaningless:
+// the identity being pinned belongs to a system that is about to cease existing. Once the
+// wait returns, every later connection uses the ordinary args and pins the INSTALLED
+// system's key, which is the one worth pinning.
+//
+// Scoped to source.kind: iso. Every other kind boots ONE system with ONE identity, keeps
+// full host-key checking throughout, and is not routed through here at all.
+func IsoReadinessSSHArgs(ssh kit.SSHArgs, vm *spec.ResolvedVm) kit.SSHArgs {
+	if vm == nil || vm.Source.Kind != "iso" {
+		return ssh
+	}
+	relaxed := ssh
+	relaxed.Args = append(append([]string{}, ssh.Args...),
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "StrictHostKeyChecking=no",
+	)
+	return relaxed
+}
+
+// ClearStaleHostKeyPin removes a per-domain known_hosts left over from a PREVIOUS run whose
+// readiness wait pinned an installer environment. IsoReadinessSSHArgs stops new ones being
+// written; this clears one already on disk, so a re-run is not poisoned by the last one.
+//
+// No-op for every source kind but iso, and for a domain with no pin. It touches only the
+// per-domain file charly writes itself.
+func ClearStaleHostKeyPin(vm *spec.ResolvedVm, knownHostsPath string) (bool, error) {
+	if vm == nil || vm.Source.Kind != "iso" || knownHostsPath == "" {
+		return false, nil
+	}
+	kh := knownHostsPath
+	if _, err := os.Stat(kh); err != nil {
+		return false, nil
+	}
+	if err := os.Remove(kh); err != nil {
+		return false, fmt.Errorf("clearing a stale host-key pin at %s: %w", kh, err)
+	}
+	return true, nil
 }

@@ -473,8 +473,17 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 	}
 	var notes []string
 	if !opts.DryRun {
+		// An iso VM's host identity changes once, mid-wait, when the installer hands over to
+		// the installed system. Clear any pin a previous run left, and do the wait itself
+		// without consulting or writing known_hosts — see IsoReadinessSSHArgs. Every later
+		// connection uses the ordinary args and pins the INSTALLED system's key.
+		if cleared, cerr := ClearStaleHostKeyPin(in.VM, in.KnownHostsPath); cerr != nil {
+			return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: %w", cerr)
+		} else if cleared {
+			fmt.Fprintf(os.Stderr, "Cleared a stale SSH host-key pin from a previous install run\n")
+		}
 		fmt.Fprintf(os.Stderr, "Waiting for sshd on %s...\n", in.Alias)
-		if err := kit.WaitForSSH(ctx, ssh, poll("ssh-ready")); err != nil {
+		if err := kit.WaitForSSH(ctx, IsoReadinessSSHArgs(ssh, in.VM), poll("ssh-ready")); err != nil {
 			return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: wait-for-sshd: %w", err)
 		}
 		if in.VM.Source.Kind == "cloud_image" || in.VM.CloudInit != nil {
