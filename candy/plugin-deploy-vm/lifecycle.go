@@ -408,7 +408,7 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 		SSHPort:        sshPort,
 		Alias:          kit.VmSshAlias(domainID),
 		SSHKeyPath:     filepath.Join(stateDir, "id_ed25519"),
-		KnownHostsPath: filepath.Join(stateDir, "known_hosts"),
+		KnownHostsPath: knownHostsPathFor(vm.Source.Kind, stateDir),
 		StateDir:       stateDir,
 		PriorState:     prior,
 	}
@@ -741,4 +741,34 @@ func marshalReply(v any) (*pb.InvokeReply, error) {
 // `vm create` is not going to — never after it.
 func shouldPublishStanza(deferToAutoBoot, createdByAutoBoot bool) bool {
 	return !deferToAutoBoot && !createdByAutoBoot
+}
+
+// knownHostsPathFor decides which known_hosts file this VM's managed ssh alias records into.
+//
+// An installer-ISO guest must record NONE. It changes its SSH host identity exactly once: the
+// live installer environment brings up its own sshd with freshly generated host keys, the first
+// thing to connect pins that key under `accept-new`, and then the installer finishes and the
+// guest reboots into the INSTALLED system whose host keys are entirely different. Every
+// connection after that fails with "Host key verification failed", polling cannot recover, and
+// the readiness gate below burns its whole cap.
+//
+// Whether the doomed key is pinned at all is a RACE against the install finishing, which is why
+// this presents as intermittent rather than as a clean failure.
+//
+// /dev/null rather than a relaxed StrictHostKeyChecking: `accept-new` still applies, so the
+// first connection is accepted exactly as before and nothing is ever RECORDED to conflict with.
+// What is given up is host-key continuity for a per-domain loopback guest whose login key charly
+// generated itself — against a guest that is otherwise unusable.
+//
+// DUPLICATION, ACKNOWLEDGED: plugin-vm's publishVmSshAlias applies the same rule, because both
+// are writers of the same stanza. The single-owner version (a shared kit.VmKnownHostsFile) was
+// implemented and BLOCKED as a partial cutover — a shared function lands with zero callers, and
+// the consumers can only adopt it after it is tagged, so no single PR can both add it and use
+// it. Rather than leave the bug open behind a three-repo chain, the rule is expressed here too,
+// and TestKnownHostsPathFor names the other location so the pair is findable from either side.
+func knownHostsPathFor(sourceKind, stateDir string) string {
+	if sourceKind == "iso" {
+		return os.DevNull
+	}
+	return filepath.Join(stateDir, "known_hosts")
 }

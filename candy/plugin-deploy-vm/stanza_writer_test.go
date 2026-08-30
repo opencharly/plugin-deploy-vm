@@ -1,6 +1,10 @@
 package deployvm
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // The stanza has ONE authority: `vm create`. prepare-venue may write it only when `vm create`
 // is not going to — never after it.
@@ -65,5 +69,35 @@ func TestPrepareVenueWritesWhenNothingElseWill(t *testing.T) {
 	if !shouldPublishStanza(false, false) {
 		t.Fatal("no `vm create` ran and nothing was deferred to it, so prepare-venue is the only " +
 			"writer — skipping here would leave `ssh <alias>` unresolvable")
+	}
+}
+
+// The known-hosts policy, on the path where prepare-venue is the LEGITIMATE sole writer:
+// a domain adopted by `charly vm import` has no stanza at all (import publishes none), so
+// something must write one.
+//
+// THE OTHER COPY OF THIS RULE lives in plugin-vm's publishVmSshAlias
+// (candy/plugin-vm/vm_create_orchestrate.go). Both are writers of the same stanza and must
+// agree. If you change one, change the other — the single-owner version was blocked as a
+// partial cutover because a shared function necessarily lands with zero callers.
+func TestKnownHostsPathFor(t *testing.T) {
+	if got := knownHostsPathFor("iso", "/state/charly-omarchy-vm"); got != os.DevNull {
+		t.Fatalf("an iso guest must record no host key, got %q", got)
+	}
+	// NEGATIVE CONTROL. The tempting simplification is to return /dev/null for everything:
+	// it makes the iso case work and nothing visibly breaks. It also silently removes
+	// host-key continuity from every guest whose identity is stable from first boot, which
+	// is a security property, not a convenience.
+	for _, kind := range []string{"cloud_image", "bootc", "bootstrap", "clone", ""} {
+		want := filepath.Join("/state/charly-vm", "known_hosts")
+		if got := knownHostsPathFor(kind, "/state/charly-vm"); got != want {
+			t.Errorf("kind %q: host-key recording was disabled for a VM with ONE stable identity: got %q, want %q",
+				kind, got, want)
+		}
+	}
+	// Per-DOMAIN, so two beds sharing one kind:vm entity never check one guest's host key
+	// against another's.
+	if knownHostsPathFor("cloud_image", "/state/a") == knownHostsPathFor("cloud_image", "/state/b") {
+		t.Fatal("two domains got the same known_hosts path")
 	}
 }
