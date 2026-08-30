@@ -486,6 +486,18 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 			}
 		}
 
+		// An ISO-installed guest does not meet charly's passwordless-sudo deploy precondition:
+		// the distro's own installer created the account, and neither archinstall's answer file
+		// nor Omarchy's orchestrator can grant NOPASSWD. Establish it once, before anything
+		// that needs root — EnsureCharlyInGuest below is the first such thing. No-op for every
+		// other source kind, and idempotent on re-deploys.
+		if note, err := EnsureIsoGuestSudo(ctx, ssh, in.VM, SSHRemoteRunner); err != nil {
+			return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: %w", err)
+		} else if note != "" {
+			fmt.Fprintf(os.Stderr, "%s\n", note)
+			notes = append(notes, note)
+		}
+
 		// (d) ensure charly is in the guest (host-surface scp against the alias).
 		msg, err := kit.EnsureCharlyInGuest(ctx, ssh, host.CharlyBin, host.Version, charlyInstallStrategy(in.VM))
 		if err != nil {
