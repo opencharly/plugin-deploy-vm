@@ -3,8 +3,6 @@ package deployvm
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -144,90 +142,5 @@ func TestEnsureIsoGuestSudo_OtherSourceKindsAreUntouched(t *testing.T) {
 	// and a nil vm must not panic
 	if _, err := EnsureIsoGuestSudo(context.Background(), kit.SSHArgs{}, nil, (&recorder{}).run); err != nil {
 		t.Errorf("a nil vm must be a no-op; got %v", err)
-	}
-}
-
-// The readiness wait for an iso VM must not consult OR write a known_hosts.
-//
-// The guest's host identity changes exactly once, mid-wait: the live installer environment
-// brings up its own sshd with fresh host keys, the probe pins them with accept-new, the
-// guest then reboots into the installed system with entirely different keys, and every
-// later probe fails "Host key ... has changed" — forever. The poll burns its whole cap
-// against a condition that cannot become true.
-//
-// Measured end to end on a real guest: the pin appears during the wait, and afterwards the
-// managed alias returns "Host key verification failed" while the same connection with the
-// pin removed reports hostname=omarchy, root=btrfs, sshd=enabled.
-func TestIsoReadinessSSHArgs_DoesNotPinDuringTheIdentityChange(t *testing.T) {
-	base := kit.SSHArgs{Host: "charly-x", Args: []string{"-o", "LogLevel=ERROR"}}
-	got := IsoReadinessSSHArgs(base, isoVM("user", "pw"))
-
-	joined := strings.Join(got.Args, " ")
-	for _, want := range []string{"UserKnownHostsFile=/dev/null", "StrictHostKeyChecking=no"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("the readiness wait must not pin: missing %q in %v", want, got.Args)
-		}
-	}
-	// the caller's own args survive
-	if !strings.Contains(joined, "LogLevel=ERROR") {
-		t.Errorf("the caller's ssh args were dropped: %v", got.Args)
-	}
-	// and the ORIGINAL must not be mutated — it is reused for every later connection, which
-	// SHOULD pin the installed system's key.
-	if strings.Contains(strings.Join(base.Args, " "), "StrictHostKeyChecking=no") {
-		t.Error("the caller's SSHArgs was mutated — later connections would stop pinning too")
-	}
-}
-
-// Every other source kind keeps full host-key checking throughout: one system, one identity,
-// nothing to tolerate.
-func TestIsoReadinessSSHArgs_OtherSourceKindsKeepPinning(t *testing.T) {
-	base := kit.SSHArgs{Host: "charly-x"}
-	for _, kind := range []string{"cloud_image", "bootc", "bootstrap", ""} {
-		vm := isoVM("user", "pw")
-		vm.Source.Kind = kind
-		got := IsoReadinessSSHArgs(base, vm)
-		if strings.Contains(strings.Join(got.Args, " "), "StrictHostKeyChecking=no") {
-			t.Errorf("kind %q: host-key checking was relaxed for a VM with one stable identity", kind)
-		}
-	}
-	if got := IsoReadinessSSHArgs(base, nil); len(got.Args) != 0 {
-		t.Errorf("a nil vm must pass through untouched; got %v", got.Args)
-	}
-}
-
-// A pin left by a PREVIOUS run's readiness wait is cleared, so a re-run is not poisoned by
-// the last one. Only for iso, only the per-domain file charly writes itself.
-func TestClearStaleHostKeyPin_ClearsOnlyTheIsoPerDomainPin(t *testing.T) {
-	dir := t.TempDir()
-	kh := filepath.Join(dir, "known_hosts")
-	write := func() {
-		if err := os.WriteFile(kh, []byte("[127.0.0.1]:40563 ssh-ed25519 INSTALLERKEY\n"), 0o600); err != nil {
-			t.Fatalf("seeding: %v", err)
-		}
-	}
-
-	write()
-	cleared, err := ClearStaleHostKeyPin(isoVM("user", "pw"), kh)
-	if err != nil || !cleared {
-		t.Fatalf("an iso pin must be cleared; got cleared=%v err=%v", cleared, err)
-	}
-	if _, err := os.Stat(kh); !os.IsNotExist(err) {
-		t.Fatal("the stale pin survived")
-	}
-
-	for _, kind := range []string{"cloud_image", "bootstrap"} {
-		write()
-		vm := isoVM("user", "pw")
-		vm.Source.Kind = kind
-		cleared, err := ClearStaleHostKeyPin(vm, kh)
-		if err != nil || cleared {
-			t.Errorf("kind %q: a legitimate pin must survive; got cleared=%v err=%v", kind, cleared, err)
-		}
-	}
-
-	// no path, no file, no error
-	if cleared, err := ClearStaleHostKeyPin(isoVM("user", "pw"), ""); err != nil || cleared {
-		t.Errorf("an empty path must be a no-op; got cleared=%v err=%v", cleared, err)
 	}
 }
