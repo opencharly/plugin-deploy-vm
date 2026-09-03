@@ -4,7 +4,10 @@ go 1.26.4
 
 require github.com/opencharly/sdk v0.2026242.1250
 
-require golang.org/x/term v0.43.0 // indirect
+require (
+	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/term v0.43.0 // indirect
+)
 
 require (
 	cuelang.org/go v0.16.1 // indirect

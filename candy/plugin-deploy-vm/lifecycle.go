@@ -492,6 +492,24 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 	}
 	var notes []string
 	if !opts.DryRun {
+		// An ISO-installed guest reaches the greeter with sshd INACTIVE and the firewall port
+		// closed (the manual's authorized_keys -> sshd/firewall promise is not delivered by
+		// the 4.0.1 install path — measured). Establish reachability FIRST via the console,
+		// exactly what omarchy's own harness (omarchy-iso-test bootstrap_ssh) does; this is
+		// idempotent and skips when SSH already works (the manual path intact).
+		if in.VM != nil && in.VM.Source.Kind == "iso" {
+			keySource := "generate"
+			if in.VM.SSH != nil && in.VM.SSH.KeySource != "" {
+				keySource = in.VM.SSH.KeySource
+			}
+			console := &VirshConsoleRunner{LibvirtURI: "qemu:///session", Domain: "charly-" + in.Alias}
+			if note, err := EnsureIsoGuestSSH(ctx, ssh, in.VM, SSHRemoteRunner, console, keySource, in.StateDir); err != nil {
+				return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: bootstrap-ssh: %w", err)
+			} else if note != "" {
+				fmt.Fprintf(os.Stderr, "%s\n", note)
+				notes = append(notes, note)
+			}
+		}
 		fmt.Fprintf(os.Stderr, "Waiting for sshd on %s...\n", in.Alias)
 		if err := kit.WaitForSSH(ctx, ssh, poll("ssh-ready")); err != nil {
 			return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: wait-for-sshd: %w", err)
