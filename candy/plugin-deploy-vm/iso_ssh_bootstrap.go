@@ -140,14 +140,14 @@ var virshShiftNames = map[rune]string{
 // bootstrap sends. The modifiers are KEY_LEFTCTRL/KEY_LEFTALT (KEY_CTRL/KEY_ALT are
 // not valid input-event names and virsh rejects them).
 var virshChord = map[string]string{
-	"ctrl":     "KEY_LEFTCTRL",
-	"alt":      "KEY_LEFTALT",
-	"meta":     "KEY_LEFTMETA",
-	"ret":      "KEY_ENTER",
-	"f1":       "KEY_F1",
-	"f3":       "KEY_F3",
-	"minus":    "KEY_MINUS",
-	"space":    "KEY_SPACE",
+	"ctrl":      "KEY_LEFTCTRL",
+	"alt":       "KEY_LEFTALT",
+	"meta":      "KEY_LEFTMETA",
+	"ret":       "KEY_ENTER",
+	"f1":        "KEY_F1",
+	"f3":        "KEY_F3",
+	"minus":     "KEY_MINUS",
+	"space":     "KEY_SPACE",
 	"backspace": "KEY_BACKSPACE",
 }
 
