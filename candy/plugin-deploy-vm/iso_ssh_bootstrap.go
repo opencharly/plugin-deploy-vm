@@ -136,10 +136,29 @@ var virshShiftNames = map[rune]string{
 	'_': "KEY_MINUS", '{': "KEY_LEFTBRACE", '}': "KEY_RIGHTBRACE",
 }
 
+// virshChord is the Linux input-event key-name mapping for the chords the console
+// bootstrap sends. The modifiers are KEY_LEFTCTRL/KEY_LEFTALT (KEY_CTRL/KEY_ALT are
+// not valid input-event names and virsh rejects them).
+var virshChord = map[string]string{
+	"ctrl":     "KEY_LEFTCTRL",
+	"alt":      "KEY_LEFTALT",
+	"meta":     "KEY_LEFTMETA",
+	"ret":      "KEY_ENTER",
+	"f1":       "KEY_F1",
+	"f3":       "KEY_F3",
+	"minus":    "KEY_MINUS",
+	"space":    "KEY_SPACE",
+	"backspace": "KEY_BACKSPACE",
+}
+
 func (r *VirshConsoleRunner) SendKeys(ctx context.Context, chord string) error {
 	parts := strings.Split(chord, "-")
 	args := []string{"-c", r.LibvirtURI, "send-key", r.Domain}
 	for _, p := range parts {
+		if k, ok := virshChord[p]; ok {
+			args = append(args, k)
+			continue
+		}
 		args = append(args, "KEY_"+strings.ToUpper(p))
 	}
 	return exec.CommandContext(ctx, "virsh", args...).Run()
