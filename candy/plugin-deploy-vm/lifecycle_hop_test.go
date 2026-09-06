@@ -7,10 +7,12 @@ import (
 	"github.com/opencharly/spec/spec"
 )
 
-// TestVmPrepareTargetEntityFromUf gates the deploy-hop decision (Phase 3): the
+// TestVmPrepareTargetEntityFromUf gates the PURE deploy-hop decision (Phase 3): the
 // derived entity may be the clone-base BED (a deploy whose from: names the terminal
-// kind:vm template) — the ONE chain resolver hops it. Removing the hop call from
-// vmPrepareVenue fails this test (a plain passthrough would return the bed name).
+// kind:vm template) — the ONE chain resolver hops it. The test exercises the pure
+// decision function (vmPrepareTargetEntityFromUf) that vmPrepareVenue consumes;
+// removing the hop from the pure function fails this test (a plain passthrough would
+// return the bed name).
 func TestVmPrepareTargetEntityFromUf(t *testing.T) {
 	uf := &spec.UnifiedFile{
 		Fleet: map[string]spec.FleetNode{
