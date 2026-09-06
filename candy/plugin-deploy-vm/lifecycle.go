@@ -39,6 +39,30 @@ type lifecycleParams struct {
 	Cmd       []string        `json:"cmd"`
 }
 
+// vmPrepareTargetEntity resolves the prepare-venue entity through the ONE deploy-hop
+// chain resolver: a plain kind:vm entity passes through; a deploy (the clone-base bed)
+// hops its from: chain to the terminal template. A load failure is a non-hop (the
+// direct lookup below surfaces the real error).
+func vmPrepareTargetEntity(ctx context.Context, exec *sdk.Executor, dir, name string) string {
+	uf, ok, err := loaderkit.LoadUnifiedViaExecutor(ctx, exec, dir)
+	if err != nil || !ok || uf == nil {
+		return name
+	}
+	if target, ok := loaderkit.DeployTargetEntity(uf, name); ok {
+		return target
+	}
+	return name
+}
+
+// vmPrepareTargetEntityFromUf is the PURE hop decision (the load-seam-free half): given
+// the unified file, return the terminal entity (R3 — the ONE resolver; gated).
+func vmPrepareTargetEntityFromUf(uf *spec.UnifiedFile, name string) string {
+	if target, ok := loaderkit.DeployTargetEntity(uf, name); ok {
+		return target
+	}
+	return name
+}
+
 // isLifecycleOp reports whether op is a substrate-lifecycle Op (vs. the OpExecute deploy walk).
 func isLifecycleOp(op string) bool {
 	switch op {
@@ -324,6 +348,12 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 	entity, err := vmEntityForPrepare(&node, p.Name)
 	if err != nil {
 		return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: %w", err)
+	}
+	// The from: name:tag deploy-hop (Phase 3): the derived entity may be the clone-base BED
+	// (a deploy whose from: names the terminal kind:vm template). Resolve the chain via the
+	// ONE resolver (loaderkit.DeployTargetEntity) before the direct lookup.
+	if target := vmPrepareTargetEntity(ctx, exec, p.Dir, entity); target != entity {
+		entity = target
 	}
 	domainID := domainIdentity(p)
 
