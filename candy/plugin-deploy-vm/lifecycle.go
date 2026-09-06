@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -609,7 +608,7 @@ func vmPostApply(ctx context.Context, exec *sdk.Executor, p lifecycleParams, hos
 	if err := json.Unmarshal(p.Node, &node); err != nil {
 		return nil, fmt.Errorf("plugin-deploy-vm post-apply: decode node: %w", err)
 	}
-	if len(node.Children) == 0 {
+	if !node.HasMembers() {
 		return marshalReply(struct{}{})
 	}
 	// `vm cp-box` reaches the guest over the managed ssh alias (charly-<domain>), so it addresses the
@@ -627,45 +626,47 @@ func vmPostApply(ctx context.Context, exec *sdk.Executor, p lifecycleParams, hos
 		return nil, fmt.Errorf("plugin-deploy-vm post-apply: deliver host charly into guest: %w", err)
 	}
 
-	for _, childKey := range sortedChildKeys(node.Children) {
-		child := node.Children[childKey]
-		if child == nil || child.Image == "" {
-			continue
+	for _, child := range inGuestPodMembers(&node) {
+		asRef := "localhost/charly-" + child.Name + ":latest"
+		fmt.Fprintf(os.Stderr, "Deploying nested pod %s.%s (%s) as a persistent in-guest quadlet...\n", domain, child.Name, child.Node.Image)
+		if _, err := vmCli(ctx, exec, false, false, "box", "build", child.Node.Image); err != nil {
+			return nil, fmt.Errorf("build nested image %s (%s): %w", child.Name, child.Node.Image, err)
 		}
-		switch child.Target {
-		case "", "pod", "container":
-		default:
-			continue // android / kubernetes / vm children are not in-guest pods
-		}
-		asRef := "localhost/charly-" + childKey + ":latest"
-		fmt.Fprintf(os.Stderr, "Deploying nested pod %s.%s (%s) as a persistent in-guest quadlet...\n", domain, childKey, child.Image)
-		if _, err := vmCli(ctx, exec, false, false, "box", "build", child.Image); err != nil {
-			return nil, fmt.Errorf("build nested image %s (%s): %w", childKey, child.Image, err)
-		}
-		if _, err := vmCli(ctx, exec, false, false, "vm", "cp-box", domain, child.Image, "--as", asRef, "--rootless"); err != nil {
-			return nil, fmt.Errorf("cp-box nested %s -> guest: %w", childKey, err)
+		if _, err := vmCli(ctx, exec, false, false, "vm", "cp-box", domain, child.Node.Image, "--as", asRef, "--rootless"); err != nil {
+			return nil, fmt.Errorf("cp-box nested %s -> guest: %w", child.Name, err)
 		}
 		script := fmt.Sprintf(
 			"sudo loginctl enable-linger \"$(id -un)\" >/dev/null 2>&1 || true\n"+
 				"export XDG_RUNTIME_DIR=\"/run/user/$(id -u)\"\n"+
 				"%s fleet from-box %s %s",
-			charlyCmd, asRef, childKey)
+			charlyCmd, asRef, child.Name)
 		if err := exec.RunUser(ctx, script, nil); err != nil {
-			return nil, fmt.Errorf("deploy nested pod %s in guest: %w", childKey, err)
+			return nil, fmt.Errorf("deploy nested pod %s in guest: %w", child.Name, err)
 		}
-		fmt.Fprintf(os.Stderr, "Nested pod %s.%s deployed (persistent in-guest quadlet)\n", domain, childKey)
+		fmt.Fprintf(os.Stderr, "Nested pod %s.%s deployed (persistent in-guest quadlet)\n", domain, child.Name)
 	}
 	return marshalReply(struct{}{})
 }
 
-// sortedChildKeys returns the nested-child keys in stable order.
-func sortedChildKeys(children map[string]*spec.Deploy) []string {
-	keys := make([]string, 0, len(children))
-	for k := range children {
-		keys = append(keys, k)
+// inGuestPodMembers filters the node's IN-SUBSTRATE members down to the nested
+// target:pod children vmPostApply deploys as persistent in-guest quadlets. The
+// member-tree successor of the former Children-map walk (spec 2106): the former
+// Children map IS the in-substrate POSITION of the one ordered Member list —
+// deploy-level members ride the shared network host-side, never in the venue.
+func inGuestPodMembers(node *spec.FleetNode) []*spec.Member {
+	var out []*spec.Member
+	for _, m := range node.InSubstrateMembers() {
+		if m.Node == nil || m.Node.Image == "" {
+			continue
+		}
+		switch m.Node.Target {
+		case "", "pod", "container":
+		default:
+			continue // android / kubernetes / vm members are not in-guest pods
+		}
+		out = append(out, m)
 	}
-	sort.Strings(keys)
-	return keys
+	return out
 }
 
 // vmStatus reads `charly vm list` and walks for this VM's domain row (want = "charly-<domain>", the
