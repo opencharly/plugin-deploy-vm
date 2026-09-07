@@ -240,7 +240,7 @@ func vmEntityForPrepare(node *spec.FleetNode, name string) (string, error) {
 // it guards is severe: candy/plugin-deploy-vm runs out-of-process, so a direct
 // deploykit.LoadDeployConfigForRead call here (the pre-fix shape) NEVER touches the executor at
 // all and ALWAYS silently returns an empty state — every domain looked "never created before,"
-// discarding+re-creating the per-domain disk overlay on EVERY `charly fleet add vm:<name>`, even
+// discarding+re-creating the per-domain disk overlay on EVERY `charly deploy add vm:<name>`, even
 // for an already-running VM.
 var resolvePriorVmState = func(ctx context.Context, exec *sdk.Executor, domainID string) (*spec.VmDeployState, error) {
 	return loaderkit.ResolveVmStateViaExecutor(ctx, exec, domainID)
@@ -279,14 +279,14 @@ func dispatchVmEphemeralTeardown(ctx context.Context, exec *sdk.Executor, p life
 	if err != nil {
 		return fmt.Errorf("plugin-deploy-vm post-teardown: marshal ephemeral-teardown request: %w", err)
 	}
-	if _, err := exec.InvokeProvider(ctx, "command", "fleet", sdk.OpEphemeralTeardown, reqJSON, nil, sdk.InvokeProviderOpts{}); err != nil {
+	if _, err := exec.InvokeProvider(ctx, "command", "deploy", sdk.OpEphemeralTeardown, reqJSON, nil, sdk.InvokeProviderOpts{}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: vm ephemeral-teardown: %v\n", err)
 	}
 	return nil
 }
 
 // dispatchVmEphemeralRegister runs the vm ephemeral-lifecycle Add-time registration by Invoking
-// command:fleet's OpEphemeralRegister DIRECTLY over the peer reverse channel — the exact mirror of
+// command:deploy's OpEphemeralRegister DIRECTLY over the peer reverse channel — the exact mirror of
 // dispatchVmEphemeralTeardown (its OpEphemeralTeardown twin). The registration BODY (systemd
 // transient timer + parent-detection) lives 100% plugin-side in candy/plugin-fleet's
 // registerEphemeral, which reaches the host over ITS OWN reverse channel — so no core dispatch hop
@@ -306,7 +306,7 @@ func dispatchVmEphemeralRegister(ctx context.Context, exec *sdk.Executor, name s
 	if err != nil {
 		return fmt.Errorf("marshal ephemeral-register request: %w", err)
 	}
-	_, regErr := exec.InvokeProvider(ctx, "command", "fleet", sdk.OpEphemeralRegister, reqJSON, nil, sdk.InvokeProviderOpts{})
+	_, regErr := exec.InvokeProvider(ctx, "command", "deploy", sdk.OpEphemeralRegister, reqJSON, nil, sdk.InvokeProviderOpts{})
 	if regErr == nil {
 		return nil
 	}
@@ -335,7 +335,7 @@ func isEphemeralPanicError(err error) bool {
 // LoadUnifiedViaExecutor — the former "deploy-entity-resolve" HostBuild seam round-trip is deleted)
 // and resolves sshPort/stateDir/SSHUser/PriorState directly — all pure sdk/deploykit + sdk/kit +
 // sdk/vmshared + sdk/loaderkit, no core-only coupling. The ephemeral-registration Add-time side effect (systemd
-// transient timer + panic-vs-warning classification, RCA #5) is dispatched to command:fleet's
+// transient timer + panic-vs-warning classification, RCA #5) is dispatched to command:deploy's
 // OpEphemeralRegister DIRECTLY via dispatchVmEphemeralRegister (the mirror of the teardown twin) —
 // no core hop; the registration BODY + its host reverse-channel access live in plugin-fleet.
 func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, host spec.HostEnv) (*pb.InvokeReply, error) {
@@ -357,7 +357,7 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 	domainID := domainIdentity(p)
 
 	// Ephemeral lifecycle registration — FIRST action, matching the deleted host-side
-	// vmLifecyclePrepare's own ordering. Invokes command:fleet's OpEphemeralRegister DIRECTLY (the
+	// vmLifecyclePrepare's own ordering. Invokes command:deploy's OpEphemeralRegister DIRECTLY (the
 	// mirror of dispatchVmEphemeralTeardown), consuming the MERGED node (never a charly.yml re-read).
 	// A panic-class error (RCA #5) fails the whole vm Add; an ordinary condition is a soft warning.
 	if err := dispatchVmEphemeralRegister(ctx, exec, p.Name, &node); err != nil {
@@ -384,7 +384,7 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 	// (LoadFleetConfig's `if DeployStateHost == nil { return nil, nil }` fast path), so `prior`
 	// was ALWAYS nil and the domain was treated as "never created before" on EVERY prepare-venue
 	// call — discarding and RE-CREATING the per-domain disk overlay on every ordinary
-	// `charly fleet add vm:<name>`, silently wiping guest state. The loaderkit reader crosses
+	// `charly deploy add vm:<name>`, silently wiping guest state. The loaderkit reader crosses
 	// back into the HOST loader regardless of this plugin's own placement.
 	prior, err := resolvePriorVmState(ctx, exec, domainID)
 	if err != nil {
@@ -638,7 +638,7 @@ func vmPostApply(ctx context.Context, exec *sdk.Executor, p lifecycleParams, hos
 		script := fmt.Sprintf(
 			"sudo loginctl enable-linger \"$(id -un)\" >/dev/null 2>&1 || true\n"+
 				"export XDG_RUNTIME_DIR=\"/run/user/$(id -u)\"\n"+
-				"%s fleet from-box %s %s",
+				"%s deploy from-box %s %s",
 			charlyCmd, asRef, child.Name)
 		if err := exec.RunUser(ctx, script, nil); err != nil {
 			return nil, fmt.Errorf("deploy nested pod %s in guest: %w", child.Name, err)
@@ -693,7 +693,7 @@ func vmStatus(ctx context.Context, exec *sdk.Executor, domain string) (*pb.Invok
 }
 
 // vmRebuild destroys + (optionally) rebuilds + recreates + starts the VM, THEN re-applies the deploy's
-// candies (+ nested pods) via `charly fleet add <name>` — the path `charly update <vm-bed>` routes
+// candies (+ nested pods) via `charly deploy add <name>` — the path `charly update <vm-bed>` routes
 // through (the disposable bed's fresh-rebuild R10 gate). Each leg is a cli-seam `charly` subcommand.
 func vmRebuild(ctx context.Context, exec *sdk.Executor, p lifecycleParams) (*pb.InvokeReply, error) {
 	var ropts struct {
@@ -725,7 +725,7 @@ func vmRebuild(ctx context.Context, exec *sdk.Executor, p lifecycleParams) (*pb.
 	if _, err := vmCli(ctx, exec, false, false, "vm", "start", entity, "--domain", domain); err != nil {
 		return nil, err
 	}
-	if _, err := vmCli(ctx, exec, false, false, "fleet", "add", p.Name); err != nil {
+	if _, err := vmCli(ctx, exec, false, false, "deploy", "add", p.Name); err != nil {
 		return nil, err
 	}
 	return marshalReply(struct{}{})
@@ -746,7 +746,7 @@ func vmPostTeardown(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 		return nil, err
 	}
 
-	// Destroy the libvirt/qemu DOMAIN — `fleet del`'s ONLY domain-teardown owner. The Del path
+	// Destroy the libvirt/qemu DOMAIN — `deploy del`'s ONLY domain-teardown owner. The Del path
 	// replays the in-guest ReverseOps and removes host config, but nothing else tore down the venue,
 	// so a non-ephemeral vm deploy leaked a running domain (#69b). Keyed by the per-deploy DOMAIN
 	// IDENTITY (--domain) so it removes ONLY this deploy's domain, never a sibling bed's; --keep-deploy
