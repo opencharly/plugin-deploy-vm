@@ -24,7 +24,7 @@ func TestIsEphemeralPanicError(t *testing.T) {
 	}{
 		{"nil error", nil, false},
 		{"ordinary error — not fatal", errors.New("systemd-run not in PATH; TTL safety net disabled"), false},
-		{"panic-marker error — fatal", fmt.Errorf("fleet ephemeral-register: %s panic: assignment to entry in nil map", sdk.EphemeralPanicMarker), true},
+		{"panic-marker error — fatal", fmt.Errorf("deploy ephemeral-register: %s panic: assignment to entry in nil map", sdk.EphemeralPanicMarker), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

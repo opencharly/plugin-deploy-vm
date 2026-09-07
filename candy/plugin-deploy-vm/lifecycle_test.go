@@ -106,7 +106,7 @@ func TestResolvePriorVmState_ErrorPropagates(t *testing.T) {
 // prior state via resolvePriorVmState(domain), so this proves the read is keyed by the canonical
 // domain (resolvePriorVmState → loaderkit.ResolveVmStateViaExecutor, the config-resolve seam is
 // DELETED), AND that a non-nil Ephemeral record triggers the
-// OpEphemeralTeardown peer-dispatch to command:fleet with the persisted VmState threaded onto the
+// OpEphemeralTeardown peer-dispatch to command:deploy with the persisted VmState threaded onto the
 // decoded node.
 func TestDispatchVmEphemeralTeardown_InvokesFleetProviderWhenEphemeral(t *testing.T) {
 	prev := resolvePriorVmState
@@ -129,10 +129,10 @@ func TestDispatchVmEphemeralTeardown_InvokesFleetProviderWhenEphemeral(t *testin
 	}
 
 	if !fake.invokeProviderCalled {
-		t.Fatal("dispatchVmEphemeralTeardown with a non-nil Ephemeral record must Invoke command:fleet's OpEphemeralTeardown — it did not call InvokeProvider at all")
+		t.Fatal("dispatchVmEphemeralTeardown with a non-nil Ephemeral record must Invoke command:deploy's OpEphemeralTeardown — it did not call InvokeProvider at all")
 	}
-	if fake.gotInvokeReq.GetClass() != "command" || fake.gotInvokeReq.GetReserved() != "fleet" || fake.gotInvokeReq.GetOp() != sdk.OpEphemeralTeardown {
-		t.Errorf("InvokeProvider(class=%q, word=%q, op=%q), want (command, fleet, %q)",
+	if fake.gotInvokeReq.GetClass() != "command" || fake.gotInvokeReq.GetReserved() != "deploy" || fake.gotInvokeReq.GetOp() != sdk.OpEphemeralTeardown {
+		t.Errorf("InvokeProvider(class=%q, word=%q, op=%q), want (command, deploy, %q)",
 			fake.gotInvokeReq.GetClass(), fake.gotInvokeReq.GetReserved(), fake.gotInvokeReq.GetOp(), sdk.OpEphemeralTeardown)
 	}
 	var gotTeardownReq spec.EphemeralTeardownRequest
@@ -154,7 +154,7 @@ func TestDispatchVmEphemeralTeardown_InvokesFleetProviderWhenEphemeral(t *testin
 }
 
 // TestDispatchVmEphemeralTeardown_NoEphemeral_SkipsDispatch covers the common non-ephemeral case:
-// a domain with no persisted Ephemeral record must NOT Invoke command:fleet at all.
+// a domain with no persisted Ephemeral record must NOT Invoke command:deploy at all.
 func TestDispatchVmEphemeralTeardown_NoEphemeral_SkipsDispatch(t *testing.T) {
 	prev := resolvePriorVmState
 	resolvePriorVmState = func(context.Context, *sdk.Executor, string) (*spec.VmDeployState, error) {
@@ -169,7 +169,7 @@ func TestDispatchVmEphemeralTeardown_NoEphemeral_SkipsDispatch(t *testing.T) {
 		t.Fatalf("dispatchVmEphemeralTeardown: %v", err)
 	}
 	if fake.invokeProviderCalled {
-		t.Error("dispatchVmEphemeralTeardown with no persisted Ephemeral record must not Invoke command:fleet")
+		t.Error("dispatchVmEphemeralTeardown with no persisted Ephemeral record must not Invoke command:deploy")
 	}
 }
 
