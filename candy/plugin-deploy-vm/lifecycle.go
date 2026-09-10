@@ -26,7 +26,7 @@ import (
 // shape as the sanctioned in-core kubernetes/android preresolvers). NO vm lifecycle logic remains in core.
 
 // lifecycleParams are the params the host proxy ships for a vm lifecycle Op. node is the canonical
-// FleetNode JSON; prepare is the resolved spec.LifecyclePrepareInput (PrepareVenue only); opts is
+// Deploy JSON; prepare is the resolved spec.LifecyclePrepareInput (PrepareVenue only); opts is
 // polymorphic (LifecycleOpts/DeployTargetLogsOpts/DeployTargetRebuildOpts), decoded per-op.
 type lifecycleParams struct {
 	Name      string          `json:"name"`
@@ -171,7 +171,7 @@ func domainIdentity(p lifecycleParams) string {
 // vmEntity resolves the kind:vm entity from the shipped node: node.From (the `vm:` cross-ref) wins,
 // else a legacy "vm:<name>" deploy-key prefix, else the deploy name.
 func vmEntity(p lifecycleParams) string {
-	var node spec.FleetNode
+	var node spec.Deploy
 	_ = json.Unmarshal(p.Node, &node)
 	if node.From != "" {
 		return string(node.From)
@@ -211,7 +211,7 @@ func vmCli(ctx context.Context, exec *sdk.Executor, capture, bestEffort bool, ar
 // Ported verbatim from the deleted charly/vm_lifecycle_preresolve.go's vmEntityForAdd (FINAL/K5
 // unit 6a, M4b vm-preresolve-body move) — the plugin now owns PrepareVenue's own entity
 // resolution instead of receiving it host-precomputed via the deleted lifecyclePrepareHook.
-func vmEntityForPrepare(node *spec.FleetNode, name string) (string, error) {
+func vmEntityForPrepare(node *spec.Deploy, name string) (string, error) {
 	if node != nil && node.From != "" {
 		return string(node.From), nil
 	}
@@ -270,7 +270,7 @@ func dispatchVmEphemeralTeardown(ctx context.Context, exec *sdk.Executor, p life
 	if prior == nil || prior.Ephemeral == nil {
 		return nil
 	}
-	var node spec.FleetNode
+	var node spec.Deploy
 	if err := json.Unmarshal(p.Node, &node); err != nil {
 		return fmt.Errorf("plugin-deploy-vm post-teardown: decode node: %w", err)
 	}
@@ -298,7 +298,7 @@ func dispatchVmEphemeralTeardown(ctx context.Context, exec *sdk.Executor, p life
 // recoverEphemeralOpPanic) is returned to FAIL the whole Add ("a panicking registration must fail the
 // add, not vanish"). Pod/kubernetes never reach it today (tracked to the bed-robustness batch; validate_ephemeral.go
 // makes the gap LOUD at load).
-func dispatchVmEphemeralRegister(ctx context.Context, exec *sdk.Executor, name string, node *spec.FleetNode) error {
+func dispatchVmEphemeralRegister(ctx context.Context, exec *sdk.Executor, name string, node *spec.Deploy) error {
 	if node == nil || !node.IsEphemeral() {
 		return nil
 	}
@@ -339,7 +339,7 @@ func isEphemeralPanicError(err error) bool {
 // OpEphemeralRegister DIRECTLY via dispatchVmEphemeralRegister (the mirror of the teardown twin) —
 // no core hop; the registration BODY + its host reverse-channel access live in plugin-fleet.
 func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, host spec.HostEnv) (*pb.InvokeReply, error) {
-	var node spec.FleetNode
+	var node spec.Deploy
 	if err := json.Unmarshal(p.Node, &node); err != nil {
 		return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: decode node: %w", err)
 	}
@@ -604,7 +604,7 @@ func charlyInstallStrategy(vm *spec.ResolvedVm) string {
 // interleave: host `box build` + `vm cp-box` via the cli seam; guest `from-box` over the LIVE guest
 // executor). exec is the guest executor the proxy serves for PostApply.
 func vmPostApply(ctx context.Context, exec *sdk.Executor, p lifecycleParams, host spec.HostEnv) (*pb.InvokeReply, error) {
-	var node spec.FleetNode
+	var node spec.Deploy
 	if err := json.Unmarshal(p.Node, &node); err != nil {
 		return nil, fmt.Errorf("plugin-deploy-vm post-apply: decode node: %w", err)
 	}
@@ -653,7 +653,7 @@ func vmPostApply(ctx context.Context, exec *sdk.Executor, p lifecycleParams, hos
 // member-tree successor of the former Children-map walk (spec 2106): the former
 // Children map IS the in-substrate POSITION of the one ordered Member list —
 // deploy-level members ride the shared network host-side, never in the venue.
-func inGuestPodMembers(node *spec.FleetNode) []*spec.Member {
+func inGuestPodMembers(node *spec.Deploy) []*spec.Member {
 	var out []*spec.Member
 	for _, m := range node.InSubstrateMembers() {
 		if m.Node == nil || m.Node.Image == "" {

@@ -15,7 +15,7 @@ import (
 // return the bed name).
 func TestVmPrepareTargetEntityFromUf(t *testing.T) {
 	uf := &spec.UnifiedFile{
-		Fleet: map[string]spec.FleetNode{
+		Deploy: map[string]spec.DeployNode{
 			"check-vm-clone-base": {From: "cachyos-vm"},
 		},
 		PluginKinds: map[string]map[string]json.RawMessage{

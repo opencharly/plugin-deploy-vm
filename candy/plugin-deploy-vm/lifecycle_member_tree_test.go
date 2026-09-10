@@ -32,9 +32,9 @@ const memberTreeNodeJSON = `{
 // the former dual Children/Members maps must arrive as the ONE ordered Member list with the
 // position vocabulary, and the walk must classify it exactly as the old map indexes did.
 func TestVmPostApply_MemberTreeNodeDecodesClassifies(t *testing.T) {
-	var node spec.FleetNode
+	var node spec.Deploy
 	if err := json.Unmarshal([]byte(memberTreeNodeJSON), &node); err != nil {
-		t.Fatalf("converted member-tree node must decode into spec.FleetNode: %v", err)
+		t.Fatalf("converted member-tree node must decode into spec.Deploy: %v", err)
 	}
 	if !node.HasMembers() {
 		t.Fatal("HasMembers() = false on a two-member node — the member-tree fold did not arrive")
@@ -57,7 +57,7 @@ func TestVmPostApply_MemberTreeNodeDecodesClassifies(t *testing.T) {
 // image-bearing shape) must NEVER appear — the former Children/Members split is now carried
 // by Position alone.
 func TestInGuestPodMembers_ConvertedShape(t *testing.T) {
-	var node spec.FleetNode
+	var node spec.Deploy
 	if err := json.Unmarshal([]byte(memberTreeNodeJSON), &node); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestInGuestPodMembers_SkipsNonPodAndImageless(t *testing.T) {
 		{"name": "nested-vm", "position": "in-substrate", "node": {"target": "vm", "from": "base"}},
 		{"name": "real", "position": "in-substrate", "node": {"target": "container", "image": "localhost/real:latest"}}
 	]}`
-	var node spec.FleetNode
+	var node spec.Deploy
 	if err := json.Unmarshal([]byte(nodeJSON), &node); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestInGuestPodMembers_SkipsNonPodAndImageless(t *testing.T) {
 // tag is the only thing that could ever produce one — the host-side loader rejects it at the
 // schema gate first), and vmPostApply treats it as the noop it must be.
 func TestVmPostApply_MemberTreeLegacyShapeIsHardCutover(t *testing.T) {
-	var node spec.FleetNode
+	var node spec.Deploy
 	if err := json.Unmarshal([]byte(`{"children": {"nested": {"image": "x"}}}`), &node); err != nil {
 		t.Fatalf("legacy JSON must still decode (into a member-less tree): %v", err)
 	}

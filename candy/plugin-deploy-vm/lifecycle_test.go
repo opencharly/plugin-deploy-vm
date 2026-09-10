@@ -181,14 +181,14 @@ func TestDispatchVmEphemeralTeardown_NoEphemeral_SkipsDispatch(t *testing.T) {
 func TestVmEntityForPrepare(t *testing.T) {
 	cases := []struct {
 		name    string
-		node    *spec.FleetNode
+		node    *spec.Deploy
 		deploy  string
 		want    string
 		wantErr bool
 	}{
 		{
 			name:   "node.From wins over everything else",
-			node:   &spec.FleetNode{From: "cachyos-gpu"},
+			node:   &spec.Deploy{From: "cachyos-gpu"},
 			deploy: "check-cachyos-gpu-vm",
 			want:   "cachyos-gpu",
 		},
@@ -212,7 +212,7 @@ func TestVmEntityForPrepare(t *testing.T) {
 		},
 		{
 			name:   "node present but From empty falls through to the deploy-name cases",
-			node:   &spec.FleetNode{Target: "vm"},
+			node:   &spec.Deploy{Target: "vm"},
 			deploy: "vm:cachyos-gpu",
 			want:   "cachyos-gpu",
 		},
