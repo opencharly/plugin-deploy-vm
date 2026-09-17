@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/opencharly/sdk"
 	"github.com/opencharly/sdk/kit"
@@ -297,8 +298,22 @@ func TestVmRebuild_MalformedOptsErrors(t *testing.T) {
 	}
 }
 
-// TestWaitGuestAgent_ReadyReturnsNil proves the happy path: the agent answers → readiness
-// returns nil immediately (before any ssh work).
+// realPoll drives the production poll primitive (vmshared.PollUntil re-exports spec/poll's
+// PollUntil) with tight bounds so a test never sleeps — the SAME ErrPollFatal abort semantics
+// the deploy path gets, NOT a hand-rolled loop that could disagree.
+func realPoll(cap time.Duration) kit.PollFunc {
+	return func(pctx context.Context, cond kit.PollCond) error {
+		rr := vmshared.ResolvedReadiness{
+			IntervalLocal: time.Millisecond,
+			PerAttempt:    10 * time.Second,
+			NoProgress:    0,
+			AbsoluteCap:   cap,
+		}
+		return vmshared.PollUntil(pctx, rr.WaitCapped("guest-agent-test", vmshared.PollLocal, cap), vmshared.PollCondition(cond))
+	}
+}
+
+// TestWaitGuestAgent_ReadyReturnsNil — happy path: the agent answers, readiness returns nil.
 func TestWaitGuestAgent_ReadyReturnsNil(t *testing.T) {
 	prev := probeGuestAgent
 	probeGuestAgent = func(context.Context, *sdk.Executor, string) (vmGuestAgentState, error) {
@@ -306,49 +321,27 @@ func TestWaitGuestAgent_ReadyReturnsNil(t *testing.T) {
 	}
 	t.Cleanup(func() { probeGuestAgent = prev })
 
-	poll := func(ctx context.Context, cond kit.PollCond) error {
-		ready, _, err := cond(ctx)
-		if err != nil {
-			return err
-		}
-		if !ready {
-			return errors.New("not ready")
-		}
-		return nil
-	}
-	if err := waitGuestAgent(context.Background(), sdk.NewInProcExecutor(&fakeExecutorServiceClient{}), "charly-check-vm", poll); err != nil {
+	if err := waitGuestAgent(context.Background(), sdk.NewInProcExecutor(&fakeExecutorServiceClient{}), "charly-check-vm", realPoll(2*time.Second)); err != nil {
 		t.Fatalf("waitGuestAgent(ready) = %v, want nil", err)
 	}
 }
 
-// TestWaitGuestAgent_TerminalDomainHardFails is the core of the operator's requirement: a CRASHED
-// or shut-off domain must be detected as a HARD FAIL as fast as possible, not retried for the
-// whole readiness cap. The cond must return ErrPollFatal (aborting the poll) on a terminal state.
+// TestWaitGuestAgent_TerminalDomainHardFails — a TERMINAL domain must abort the REAL poll on the
+// FIRST probe (ErrPollFatal), never retry to the cap. This drives vmshared.PollUntil, so the
+// abort semantics under test are the production ones.
 func TestWaitGuestAgent_TerminalDomainHardFails(t *testing.T) {
 	for _, state := range []string{"crashed", "shut off", "absent", "unreachable"} {
 		t.Run(state, func(t *testing.T) {
 			prev := probeGuestAgent
+			calls := 0
 			probeGuestAgent = func(context.Context, *sdk.Executor, string) (vmGuestAgentState, error) {
+				calls++
 				return vmGuestAgentState{Ready: false, State: state, Failed: state == "crashed" || state == "shut off"}, nil
 			}
 			t.Cleanup(func() { probeGuestAgent = prev })
 
-			calls := 0
-			poll := func(ctx context.Context, cond kit.PollCond) error {
-				calls++
-				ready, _, err := cond(ctx)
-				if err != nil {
-					if errors.Is(err, vmshared.ErrPollFatal) {
-						return err // the poll aborts immediately on a fatal cond error
-					}
-					return err
-				}
-				if ready {
-					return nil
-				}
-				return errors.New("still not ready")
-			}
-			err := waitGuestAgent(context.Background(), sdk.NewInProcExecutor(&fakeExecutorServiceClient{}), "charly-check-vm", poll)
+			start := time.Now()
+			err := waitGuestAgent(context.Background(), sdk.NewInProcExecutor(&fakeExecutorServiceClient{}), "charly-check-vm", realPoll(30*time.Second))
 			if err == nil {
 				t.Fatalf("waitGuestAgent on a %q domain must hard-fail, got nil", state)
 			}
@@ -358,12 +351,44 @@ func TestWaitGuestAgent_TerminalDomainHardFails(t *testing.T) {
 			if calls != 1 {
 				t.Errorf("a terminal domain must abort after the FIRST probe, got %d probes", calls)
 			}
+			if elapsed := time.Since(start); elapsed > 5*time.Second {
+				t.Errorf("a terminal domain must fail FAST, took %s (the 30s cap was not aborted)", elapsed)
+			}
 		})
 	}
 }
 
-// TestWaitGuestAgent_BootingIsTransient proves a still-booting guest (domain running, agent not
-// yet answering) is TRANSIENT — it must keep polling, never hard-fail.
+// TestWaitGuestAgent_ProbeFailureIsFatal — a probe that could NOT be made (the vm plugin
+// unconnectable / the guest-ping op absent) is a HARNESS failure, not "still booting": it must
+// be surfaced as ErrPollFatal immediately, never masked into a retry-to-cap (the exact defect
+// the RCA names).
+func TestWaitGuestAgent_ProbeFailureIsFatal(t *testing.T) {
+	prev := probeGuestAgent
+	calls := 0
+	probeGuestAgent = func(context.Context, *sdk.Executor, string) (vmGuestAgentState, error) {
+		calls++
+		return vmGuestAgentState{}, errors.New("vm plugin unavailable: no provider registered")
+	}
+	t.Cleanup(func() { probeGuestAgent = prev })
+
+	start := time.Now()
+	err := waitGuestAgent(context.Background(), sdk.NewInProcExecutor(&fakeExecutorServiceClient{}), "charly-check-vm", realPoll(30*time.Second))
+	if err == nil {
+		t.Fatal("an unmade probe must hard-fail, got nil")
+	}
+	if !errors.Is(err, vmshared.ErrPollFatal) {
+		t.Fatalf("an unmade probe must return ErrPollFatal, got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("an unmade probe must abort after the FIRST attempt, got %d", calls)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("an unmade probe must fail FAST, took %s", elapsed)
+	}
+}
+
+// TestWaitGuestAgent_BootingIsTransient — a still-booting guest (domain running, agent not yet
+// answering) is TRANSIENT: the real poll keeps ticking until the agent answers.
 func TestWaitGuestAgent_BootingIsTransient(t *testing.T) {
 	prev := probeGuestAgent
 	calls := 0
@@ -376,21 +401,7 @@ func TestWaitGuestAgent_BootingIsTransient(t *testing.T) {
 	}
 	t.Cleanup(func() { probeGuestAgent = prev })
 
-	// A minimal loop matching PollUntil's contract: keep ticking until ready, but abort
-	// immediately on a fatal cond error.
-	poll := func(ctx context.Context, cond kit.PollCond) error {
-		for i := 0; i < 10; i++ {
-			ready, _, err := cond(ctx)
-			if err != nil {
-				return err
-			}
-			if ready {
-				return nil
-			}
-		}
-		return errors.New("not ready yet")
-	}
-	if err := waitGuestAgent(context.Background(), sdk.NewInProcExecutor(&fakeExecutorServiceClient{}), "charly-check-vm", poll); err != nil {
+	if err := waitGuestAgent(context.Background(), sdk.NewInProcExecutor(&fakeExecutorServiceClient{}), "charly-check-vm", realPoll(30*time.Second)); err != nil {
 		t.Fatalf("a booting guest must become ready, got %v", err)
 	}
 	if calls != 3 {

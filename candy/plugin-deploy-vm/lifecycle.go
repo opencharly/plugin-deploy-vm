@@ -250,17 +250,23 @@ var probeGuestAgent = func(ctx context.Context, exec *sdk.Executor, domain strin
 	return st, nil
 }
 
-// waitGuestAgent polls the guest agent to readiness under the injected readiness poll. The cond
-// returns ErrPollFatal the moment the domain is reported TERMINAL (crashed / shut off / absent),
-// so a dead domain hard-fails immediately instead of burning the whole readiness cap. A merely
-// not-yet-answered agent is transient (the OS is still booting) and keeps polling.
+// waitGuestAgent polls the guest agent to readiness under the injected readiness poll.
+//
+// TERMINAL vs TRANSIENT is the whole point: a domain the reply marks FAILED (crashed / shut off /
+// absent / unreachable) is a hard `ErrPollFatal` — the poll aborts on the FIRST probe instead of
+// burning its cap, which is the defect this gate removes. A merely not-yet-answered agent is
+// transient (the OS is still booting) and keeps polling.
+//
+// A probe that could not be MADE (the vm plugin not connectable, the `guest-ping` op absent, an
+// RPC error) is NOT a domain verdict and NOT silently retried-to-cap: it is a HARNESS failure —
+// the readiness gate cannot function — so it is surfaced as `ErrPollFatal` with the cause, never
+// masked as "still booting" (the masking this fix removes; a retry-to-cap would reproduce the
+// exact generic `absolute cap exceeded` the RCA names).
 func waitGuestAgent(ctx context.Context, exec *sdk.Executor, domain string, poll kit.PollFunc) error {
 	return poll(ctx, func(actx context.Context) (bool, float64, error) {
 		st, err := probeGuestAgent(actx, exec, domain)
 		if err != nil {
-			// The probe itself could not run (plugin not connected / RPC error). Not a
-			// domain verdict — transient, keep polling.
-			return false, 0, nil
+			return false, 0, fmt.Errorf("%w: guest-agent probe could not reach the vm plugin (domain %q): %v", vmshared.ErrPollFatal, domain, err)
 		}
 		if st.Ready {
 			return true, 0, nil
@@ -623,7 +629,11 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 		// nothing to ping; waiting on it would deadlock, so it is skipped there.
 		if in.VM != nil && declaresGuestAgentChannel(in.VM) {
 			fmt.Fprintf(os.Stderr, "Waiting for the guest agent on %s...\n", in.Alias)
-			if err := waitGuestAgent(ctx, exec, "charly-"+in.Alias, poll("guest-agent")); err != nil {
+			// in.Alias IS the libvirt domain name: kit.VmSshAlias(domainID) == "charly-"+domainID,
+			// the SAME "charly-<identity>" convention the domain/disk/state-dir use. Do NOT
+			// re-prefix it (the pre-fix "charly-"+in.Alias looked up charly-charly-<id> and
+			// reported a LIVE domain as absent — caught live by check-guest-agent-vm).
+			if err := waitGuestAgent(ctx, exec, in.Alias, poll("guest-agent")); err != nil {
 				return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: wait-for-guest-agent: %w", err)
 			}
 		}
