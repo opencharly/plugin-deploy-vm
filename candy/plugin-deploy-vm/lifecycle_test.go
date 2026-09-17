@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/opencharly/sdk"
+	"github.com/opencharly/sdk/kit"
+	"github.com/opencharly/sdk/vmshared"
 	pb "github.com/opencharly/spec/proto"
 	"github.com/opencharly/spec/spec"
 	"google.golang.org/grpc"
@@ -292,5 +294,127 @@ func TestVmRebuild_MalformedOptsErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "decode opts") {
 		t.Errorf("error = %v, want it to identify the decode failure (\"decode opts\")", err)
+	}
+}
+
+// TestWaitGuestAgent_ReadyReturnsNil proves the happy path: the agent answers → readiness
+// returns nil immediately (before any ssh work).
+func TestWaitGuestAgent_ReadyReturnsNil(t *testing.T) {
+	prev := probeGuestAgent
+	probeGuestAgent = func(context.Context, *sdk.Executor, string) (vmGuestAgentState, error) {
+		return vmGuestAgentState{Ready: true, State: "running"}, nil
+	}
+	t.Cleanup(func() { probeGuestAgent = prev })
+
+	poll := func(ctx context.Context, cond kit.PollCond) error {
+		ready, _, err := cond(ctx)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			return errors.New("not ready")
+		}
+		return nil
+	}
+	if err := waitGuestAgent(context.Background(), sdk.NewInProcExecutor(&fakeExecutorServiceClient{}), "charly-check-vm", poll); err != nil {
+		t.Fatalf("waitGuestAgent(ready) = %v, want nil", err)
+	}
+}
+
+// TestWaitGuestAgent_TerminalDomainHardFails is the core of the operator's requirement: a CRASHED
+// or shut-off domain must be detected as a HARD FAIL as fast as possible, not retried for the
+// whole readiness cap. The cond must return ErrPollFatal (aborting the poll) on a terminal state.
+func TestWaitGuestAgent_TerminalDomainHardFails(t *testing.T) {
+	for _, state := range []string{"crashed", "shut off", "absent", "unreachable"} {
+		t.Run(state, func(t *testing.T) {
+			prev := probeGuestAgent
+			probeGuestAgent = func(context.Context, *sdk.Executor, string) (vmGuestAgentState, error) {
+				return vmGuestAgentState{Ready: false, State: state, Failed: state == "crashed" || state == "shut off"}, nil
+			}
+			t.Cleanup(func() { probeGuestAgent = prev })
+
+			calls := 0
+			poll := func(ctx context.Context, cond kit.PollCond) error {
+				calls++
+				ready, _, err := cond(ctx)
+				if err != nil {
+					if errors.Is(err, vmshared.ErrPollFatal) {
+						return err // the poll aborts immediately on a fatal cond error
+					}
+					return err
+				}
+				if ready {
+					return nil
+				}
+				return errors.New("still not ready")
+			}
+			err := waitGuestAgent(context.Background(), sdk.NewInProcExecutor(&fakeExecutorServiceClient{}), "charly-check-vm", poll)
+			if err == nil {
+				t.Fatalf("waitGuestAgent on a %q domain must hard-fail, got nil", state)
+			}
+			if !errors.Is(err, vmshared.ErrPollFatal) {
+				t.Fatalf("waitGuestAgent on a %q domain must return ErrPollFatal (abort, not retry), got %v", state, err)
+			}
+			if calls != 1 {
+				t.Errorf("a terminal domain must abort after the FIRST probe, got %d probes", calls)
+			}
+		})
+	}
+}
+
+// TestWaitGuestAgent_BootingIsTransient proves a still-booting guest (domain running, agent not
+// yet answering) is TRANSIENT — it must keep polling, never hard-fail.
+func TestWaitGuestAgent_BootingIsTransient(t *testing.T) {
+	prev := probeGuestAgent
+	calls := 0
+	probeGuestAgent = func(context.Context, *sdk.Executor, string) (vmGuestAgentState, error) {
+		calls++
+		if calls < 3 {
+			return vmGuestAgentState{Ready: false, State: "running", Error: "agent not connected"}, nil
+		}
+		return vmGuestAgentState{Ready: true, State: "running"}, nil
+	}
+	t.Cleanup(func() { probeGuestAgent = prev })
+
+	// A minimal loop matching PollUntil's contract: keep ticking until ready, but abort
+	// immediately on a fatal cond error.
+	poll := func(ctx context.Context, cond kit.PollCond) error {
+		for i := 0; i < 10; i++ {
+			ready, _, err := cond(ctx)
+			if err != nil {
+				return err
+			}
+			if ready {
+				return nil
+			}
+		}
+		return errors.New("not ready yet")
+	}
+	if err := waitGuestAgent(context.Background(), sdk.NewInProcExecutor(&fakeExecutorServiceClient{}), "charly-check-vm", poll); err != nil {
+		t.Fatalf("a booting guest must become ready, got %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 probes (2 transient + 1 ready), got %d", calls)
+	}
+}
+
+// TestDeclaresGuestAgentChannel proves the gate is data-driven: a VM declaring the channel (as a
+// structured entry OR a raw snippet) is gated on the agent; one without is not. This plugin serves
+// every repo's VM deploys, so an unconditional wait would deadlock a guest that has no agent.
+func TestDeclaresGuestAgentChannel(t *testing.T) {
+	withChannel := &spec.ResolvedVm{Libvirt: &spec.LibvirtDomain{Devices: &spec.LibvirtDevices{Channels: []spec.LibvirtChannel{{Type: "unix", Name: "org.qemu.guest_agent.0"}}}}}
+	if !declaresGuestAgentChannel(withChannel) {
+		t.Error("a VM with the structured guest-agent channel must be gated")
+	}
+	withSnippet := &spec.ResolvedVm{Libvirt: &spec.LibvirtDomain{Snippets: []string{"<channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>"}}}
+	if !declaresGuestAgentChannel(withSnippet) {
+		t.Error("a VM declaring the channel as a raw snippet must be gated")
+	}
+	without := &spec.ResolvedVm{Libvirt: &spec.LibvirtDomain{Devices: &spec.LibvirtDevices{Channels: []spec.LibvirtChannel{{Type: "spicevmc", Name: "com.redhat.spice.0"}}}}}
+	if declaresGuestAgentChannel(without) {
+		t.Error("a VM with NO guest-agent channel must NOT be gated (would deadlock)")
+	}
+	if declaresGuestAgentChannel(nil) {
+		t.Error("a nil VM must NOT be gated")
 	}
 }
