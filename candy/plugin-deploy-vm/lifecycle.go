@@ -182,36 +182,6 @@ func vmEntity(p lifecycleParams) string {
 	return p.Name
 }
 
-// guestAgentChannelName is the qemu-guest-agent virtio-serial port name (the SAME port libvirt's
-// guest-agent client dials).
-const guestAgentChannelName = "org.qemu.guest_agent.0"
-
-// declaresGuestAgentChannel reports whether a VM entity's libvirt devices wire the guest-agent
-// channel — via a structured `channels:` entry OR a raw `libvirt.snippets:` string (the
-// eval-omarchy omarchy-vm authors it as a snippet). Data-driven: a guest whose entity declares no
-// channel must NOT be gated on the agent, because this plugin serves every repo's VM deploys.
-func declaresGuestAgentChannel(vm *spec.ResolvedVm) bool {
-	if vm == nil || vm.Libvirt == nil {
-		return false
-	}
-	// A raw snippet may declare the channel with NO structured devices block at all, so
-	// check snippets BEFORE the devices nil-guard.
-	for _, snip := range vm.Libvirt.Snippets {
-		if strings.Contains(snip, guestAgentChannelName) {
-			return true
-		}
-	}
-	if vm.Libvirt.Devices == nil {
-		return false
-	}
-	for _, ch := range vm.Libvirt.Devices.Channels {
-		if ch.Name == guestAgentChannelName {
-			return true
-		}
-	}
-	return false
-}
-
 // vmPluginCandyRef is the canonical plugin-vm candy ref, used as the S3b lazy-connect ExtraRef so
 // a project that vendors candy/plugin-vm nowhere still resolves it (the SAME fallback
 // plugin-preempt/plugin-ssh/plugin-substrate use).
@@ -219,63 +189,64 @@ func vmPluginCandyRef() string {
 	return "@" + spec.DefaultProjectRepo + "/candy/plugin-vm"
 }
 
-// vmGuestAgentState is the decoded reply of the vm plugin's internal "guest-ping" op — the
-// qemu-guest-agent readiness probe (domain state + agent liveness in ONE round trip).
-type vmGuestAgentState struct {
-	Ready  bool   `json:"ready"`
-	State  string `json:"state"`  // running | shut off | paused | crashed | suspended | absent | unreachable
-	Failed bool   `json:"failed"` // terminal: the domain crashed / shut off — never becomes ready
-	Error  string `json:"error,omitempty"`
+// vmDomainState is the decoded reply of the vm plugin's internal "domain-state" op — the domain's
+// EXISTENCE, RUNNING flag, STATE string, and the TERMINAL `failed` flag. Unlike guest-ping it
+// needs NO qemu-guest-agent and NO virtio-serial channel: it is a pure libvirt RPC available for
+// EVERY VM deploy from the moment the domain is defined.
+type vmDomainState struct {
+	Exists  bool   `json:"exists"`
+	Running bool   `json:"running"`
+	State   string `json:"state"`  // running | shut off | paused | crashed | suspended | absent | unreachable
+	Failed  bool   `json:"failed"` // terminal: the domain crashed / shut off / is absent / libvirt unreachable
+	Error   string `json:"error,omitempty"`
 }
 
-// probeGuestAgent asks the vm plugin whether the guest's qemu-guest-agent answers. The agent only
-// responds once the guest OS is up, so a hit is a REAL boot signal — strictly earlier and
-// stronger than an sshd poll (no sshd config, no firewall, no key delivery needed). Domain state
-// rides the same reply so a CRASHED / shut-off domain is reported terminal instead of being
-// retried for the whole cap. A package var (test seam, same pattern as resolvePriorVmState) so
-// the readiness test stubs the probe instead of needing a live domain.
-var probeGuestAgent = func(ctx context.Context, exec *sdk.Executor, domain string) (vmGuestAgentState, error) {
-	envJSON, err := json.Marshal(spec.VmPluginEnv{VmOp: "guest-ping", VmName: domain})
+// probeDomainState asks the vm plugin for the domain's state. A package var (test seam, same
+// pattern as resolvePriorVmState) so the readiness test stubs the probe instead of needing a live
+// domain.
+var probeDomainState = func(ctx context.Context, exec *sdk.Executor, domain string) (vmDomainState, error) {
+	envJSON, err := json.Marshal(spec.VmPluginEnv{VmOp: "domain-state", VmName: domain})
 	if err != nil {
-		return vmGuestAgentState{}, err
+		return vmDomainState{}, err
 	}
 	out, err := exec.InvokeProvider(ctx, "verb", "libvirt", sdk.OpRun, nil, envJSON, sdk.InvokeProviderOpts{ExtraRef: vmPluginCandyRef()})
 	if err != nil {
-		return vmGuestAgentState{}, err
+		return vmDomainState{}, err
 	}
-	var st vmGuestAgentState
+	var st vmDomainState
 	if uerr := json.Unmarshal(out, &st); uerr != nil {
-		return vmGuestAgentState{}, uerr
+		return vmDomainState{}, uerr
 	}
 	return st, nil
 }
 
-// waitGuestAgent polls the guest agent to readiness under the injected readiness poll.
+// ensureDomainBootable is the FIRST prepare-venue readiness step: it makes ONE domain-state probe
+// and hard-fails a TERMINAL domain (crashed / shut off / absent / libvirt unreachable) in
+// milliseconds, instead of letting the later sshd wait burn its whole readiness cap on a domain
+// that can never become ready. That early abort is the entire value the gate adds.
 //
-// TERMINAL vs TRANSIENT is the whole point: a domain the reply marks FAILED (crashed / shut off /
-// absent / unreachable) is a hard `ErrPollFatal` — the poll aborts on the FIRST probe instead of
-// burning its cap, which is the defect this gate removes. A merely not-yet-answered agent is
-// transient (the OS is still booting) and keeps polling.
+// IT MUST NOT WAIT ON THE QEMU-GUEST-AGENT, and that is the defect this replaces (RCA
+// 2026.261.0728). The previous gate polled the guest agent to readiness — but the agent is
+// installed by a CANDY APPLIED LATER IN THE SAME DEPLOY (`omarchy-eval-record` runs
+// `pacman -S qemu-guest-agent` during deploy-add, AFTER prepare-venue). So on a fresh ISO install
+// the agent is absent for the entire prepare-venue phase and can never answer: the poll could not
+// distinguish "agent not yet connected because the OS is still booting" from "agent never
+// installed in this phase", retried to the 30-minute absolute cap, and failed every first
+// provision. prepare-venue may rely ONLY on signals available BEFORE any candy is applied: the
+// libvirt domain state (this probe) and, after the ISO SSH bootstrap, sshd (the wait below). The
+// agent is a consequence of installing candy, never a pre-deploy readiness prerequisite.
 //
-// A probe that could not be MADE (the vm plugin not connectable, the `guest-ping` op absent, an
-// RPC error) is NOT a domain verdict and NOT silently retried-to-cap: it is a HARNESS failure —
-// the readiness gate cannot function — so it is surfaced as `ErrPollFatal` with the cause, never
-// masked as "still booting" (the masking this fix removes; a retry-to-cap would reproduce the
-// exact generic `absolute cap exceeded` the RCA names).
-func waitGuestAgent(ctx context.Context, exec *sdk.Executor, domain string, poll kit.PollFunc) error {
-	return poll(ctx, func(actx context.Context) (bool, float64, error) {
-		st, err := probeGuestAgent(actx, exec, domain)
-		if err != nil {
-			return false, 0, fmt.Errorf("%w: guest-agent probe could not reach the vm plugin (domain %q): %v", vmshared.ErrPollFatal, domain, err)
-		}
-		if st.Ready {
-			return true, 0, nil
-		}
-		if st.Failed || st.State == "absent" || st.State == "unreachable" {
-			return false, 0, fmt.Errorf("%w: domain %q is %s — it cannot become ready", vmshared.ErrPollFatal, domain, st.State)
-		}
-		return false, 0, nil
-	})
+// A probe that could not be MADE (the vm plugin unconnectable, the `domain-state` op absent, an
+// RPC error) is a HARNESS failure — surfaced with its cause, never masked as "still booting".
+func ensureDomainBootable(ctx context.Context, exec *sdk.Executor, domain string) error {
+	st, err := probeDomainState(ctx, exec, domain)
+	if err != nil {
+		return fmt.Errorf("domain-state probe could not reach the vm plugin (domain %q): %w", domain, err)
+	}
+	if st.Failed || st.State == "absent" || st.State == "unreachable" || st.State == "crashed" || st.State == "shut off" {
+		return fmt.Errorf("domain %q is %s — it cannot become ready", domain, st.State)
+	}
+	return nil
 }
 
 // vmCli asks the HOST to run `charly <argv>` via the generic "cli" host-builder (the vm analog of
@@ -617,25 +588,19 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 	}
 	var notes []string
 	if !opts.DryRun {
-		// (c0) GUEST-AGENT READINESS — the FIRST and strongest boot signal. The
-		// qemu-guest-agent only answers once the guest OS is up, and the probe carries
-		// the domain state, so a crashed / shut-off / absent domain hard-fails HERE
-		// instead of hanging the later sshd poll for the whole readiness cap. This
-		// runs BEFORE the SSH bootstrap: a dead domain is diagnosed in seconds, and a
-		// live one is confirmed booted before any ssh reachability work begins.
-		// GATED on the VM declaring the guest-agent channel — this plugin serves EVERY
-		// repo's VM deploys, and a guest whose entity declares no agent channel (an
-		// ISO install before the eval payload, a cloud image without the service) has
-		// nothing to ping; waiting on it would deadlock, so it is skipped there.
-		if in.VM != nil && declaresGuestAgentChannel(in.VM) {
-			fmt.Fprintf(os.Stderr, "Waiting for the guest agent on %s...\n", in.Alias)
-			// in.Alias IS the libvirt domain name: kit.VmSshAlias(domainID) == "charly-"+domainID,
-			// the SAME "charly-<identity>" convention the domain/disk/state-dir use. Do NOT
-			// re-prefix it (the pre-fix "charly-"+in.Alias looked up charly-charly-<id> and
-			// reported a LIVE domain as absent — caught live by check-guest-agent-vm).
-			if err := waitGuestAgent(ctx, exec, in.Alias, poll("guest-agent")); err != nil {
-				return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: wait-for-guest-agent: %w", err)
-			}
+		// (c0) DOMAIN-STATE PREFLIGHT — the FIRST readiness step, and the ONLY boot signal
+		// available before any candy is applied. It makes ONE pure-libvirt RPC and hard-fails
+		// a TERMINAL domain (crashed / shut off / absent / libvirt unreachable) in
+		// milliseconds, so a dead domain is diagnosed at once instead of burning the sshd
+		// wait's whole readiness cap. It does NOT gate on the qemu-guest-agent: that agent is
+		// installed by a candy applied LATER in this same deploy, so on a fresh ISO install it
+		// is absent for the entire prepare-venue phase and a guest-agent poll could never
+		// succeed (RCA 2026.261.0728 — the prior agent gate retried to the 30m cap and failed
+		// every first provision). in.Alias IS the libvirt domain name (kit.VmSshAlias(domainID)
+		// == "charly-"+domainID); do NOT re-prefix it.
+		fmt.Fprintf(os.Stderr, "Checking the domain state on %s...\n", in.Alias)
+		if err := ensureDomainBootable(ctx, exec, in.Alias); err != nil {
+			return nil, fmt.Errorf("plugin-deploy-vm prepare-venue: domain-state preflight: %w", err)
 		}
 		// An ISO-installed guest reaches the greeter with sshd INACTIVE and the firewall port
 		// closed (the manual's authorized_keys -> sshd/firewall promise is not delivered by
