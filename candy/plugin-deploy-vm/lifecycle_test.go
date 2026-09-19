@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -374,21 +375,37 @@ func TestEnsureDomainBootable_ProbeFailureIsFatal(t *testing.T) {
 	}
 }
 
-// TestPrepareVenueDoesNotWaitOnGuestAgent — the guard that the RCA defect cannot return: no
-// prepare-venue code path may reference the qemu-guest-agent probe. The agent is installed by a
-// candy applied AFTER prepare-venue, so gating on it deadlocks every first provision. This reads
-// the source so a future edit that reintroduces the gate fails here rather than in a 30-minute
+// TestPrepareVenueDoesNotWaitOnGuestAgent — the guard that the RCA defect cannot return:
+// no prepare-venue code path may reference the qemu-guest-agent probe. The agent is
+// installed by a candy applied AFTER prepare-venue, so gating on it deadlocks every first
+// provision. This scans EVERY non-test Go file in the package (not just lifecycle.go), so
+// a future edit that reintroduces the gate anywhere fails here rather than in a 30-minute
 // live hang.
 func TestPrepareVenueDoesNotWaitOnGuestAgent(t *testing.T) {
-	src, err := os.ReadFile("lifecycle.go")
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Match CODE, not the explanatory prose: the removed probe was a symbol + a VmOp
-	// invocation. A comment naming the agent is the RCA record, not a gate.
-	for _, banned := range []string{"waitGuestAgent", "probeGuestAgent", `VmOp: "guest-ping"`} {
-		if strings.Contains(string(src), banned) {
-			t.Errorf("lifecycle.go references %q in code — prepare-venue MUST NOT gate on the qemu-guest-agent (installed later by a candy, so a wait deadlocks first provision; RCA 2026.261.0728)", banned)
+	banned := []string{"waitGuestAgent", "probeGuestAgent", "vmGuestAgentState", `VmOp: "guest-ping"`}
+	scanned := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
 		}
+		src, rerr := os.ReadFile(f)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		scanned++
+		// Match CODE, not the explanatory prose: the removed probe was a symbol + a VmOp
+		// invocation. A comment naming the agent is the RCA record, not a gate.
+		for _, b := range banned {
+			if strings.Contains(string(src), b) {
+				t.Errorf("%s references %q in code — prepare-venue MUST NOT gate on the qemu-guest-agent (installed later by a candy, so a wait deadlocks first provision; RCA 2026.261.0728)", f, b)
+			}
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("no non-test Go files scanned — the glob or layout changed")
 	}
 }
