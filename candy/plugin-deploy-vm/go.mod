@@ -2,9 +2,11 @@ module github.com/opencharly/plugin-deploy-vm/candy/plugin-deploy-vm
 
 go 1.26.4
 
-require github.com/opencharly/sdk v0.2026266.623
+require github.com/opencharly/sdk v0.2026269.1159
 
 require (
+	github.com/opencontainers/go-digest v1.0.0 // indirect
+	github.com/opencontainers/image-spec v1.1.1 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 )
@@ -24,7 +26,7 @@ require (
 	github.com/mattn/go-isatty v0.0.17 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/oklog/run v1.1.0 // indirect
-	github.com/opencharly/spec v0.2026266.545
+	github.com/opencharly/spec v0.2026269.212
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/protocolbuffers/txtpbfmt v0.0.0-20260217160748-a481f6a22f94 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
