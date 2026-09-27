@@ -37,6 +37,7 @@ package deployvm
 
 import (
 	"context"
+	"embed"
 	"fmt"
 
 	"github.com/opencharly/sdk"
@@ -44,18 +45,22 @@ import (
 	pb "github.com/opencharly/spec/proto"
 )
 
+//go:embed schema/*.cue
+var schemaFS embed.FS
+
 const calver = "2026.180.0001"
 
 // NewProvider returns the deployvm provider.
 func NewProvider() pb.ProviderServer { return &provider{} }
 
 // NewMeta advertises the deploy:vm capability (empty InputDef — the substrate carries no
-// authored plugin_input) + its self-contained, load-gate-only CUE schema, via
-// sdk.NewMeta → BuildCapabilities.
+// authored plugin_input) + this plugin's OWN self-contained CUE schema (schema/vm.cue,
+// defining #DeployVMPlugin, embedded via schemaFS), served over Describe via
+// sdk.NewMeta → BuildCapabilities. There is NO schema-less plugin.
 func NewMeta() pb.PluginMetaServer {
 	return sdk.NewMeta(calver,
 		[]sdk.ProvidedCapability{{Class: "deploy", Word: "vm", InputDef: "", Lifecycle: true}},
-		nil)
+		schemaFS)
 }
 
 type provider struct{ pb.UnimplementedProviderServer }
