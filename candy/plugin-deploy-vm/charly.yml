@@ -1,7 +1,5 @@
-version: 2026.232.0520
 plugin-deploy-vm:
     candy:
-        version: 2026.180.0001
         description: |-
             OUT-OF-TREE charly DEPLOY plugin serving the `vm` deploy SUBSTRATE —
             `target: vm` (a deployment applied INSIDE a running VM over SSH). A standalone
