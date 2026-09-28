@@ -844,16 +844,27 @@ func vmPostTeardown(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 		}
 	}
 
-	// Two entries carry this deploy's state, both keyed by the deploy (never the shared entity):
+	// Two entries carry this deploy's state, both keyed by the deploy IDENTITY (never the shared
+	// entity, and never a `vm:`-prefixed key since the #301 identity cutover):
 	//   - the deploy-state entry the proxy persisted under the deploy name (p.Name), and
-	//   - the port/instance-id entry vm:<domain> runVmSpecCreate persisted.
-	// Removing them by domain (not vm:<entity>) avoids deploykit.RemoveVmDeployEntry's From-scan
+	//   - the port/instance-id entry runVmSpecCreate persisted under the domain identity.
+	// Removing them by identity (not vm:<entity>) avoids deploykit.RemoveVmDeployEntry's From-scan
 	// over-matching sibling beds that share the entity.
-	entries := []string{p.Name}
-	if portKey := "vm:" + domain; portKey != p.Name {
-		entries = append(entries, portKey)
+	return marshalReply(spec.PostTeardownReply{RemoveEntries: vmTeardownRemoveEntries(p.Name, domain)})
+}
+
+// vmTeardownRemoveEntries returns the per-host deploy-entry keys a vm teardown removes: the
+// deploy name (p.Name) and the per-deploy DOMAIN IDENTITY. Both are IDENTITY keys — the `vm:`
+// addressing prefix is NOT part of the per-host key since the #301 identity cutover, so a
+// teardown that named `vm:<domain>` would leave the identity-keyed entry behind (entries
+// accumulate). Extracted from vmPostTeardown so the key set is unit-testable without a live
+// executor.
+func vmTeardownRemoveEntries(name, domain string) []string {
+	entries := []string{name}
+	if domain != name {
+		entries = append(entries, domain)
 	}
-	return marshalReply(spec.PostTeardownReply{RemoveEntries: entries})
+	return entries
 }
 
 // cliOK returns an empty-struct reply, propagating a cli error.
