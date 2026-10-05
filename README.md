@@ -36,7 +36,7 @@ The plugin dials back through the SDK executor and hands the plans to the shared
   into the guest; a reboot reboots the guest + waits for the `boot_id` change).
 
 It returns the combined teardown ops the host records in the install ledger and
-replays at `charly fleet del` (record-and-replay).
+replays at `charly deploy del` (record-and-replay).
 
 ## How to use it
 
@@ -68,7 +68,7 @@ my-deploy:
 
 - Owning skill: `/charly-vm:vm` — `charly vm` commands, `kind: vm` entities,
   cloud_image vs bootc source types, and VM lifecycle.
-- `/charly-core:deploy` — `charly fleet add`/`del` and deploy configuration.
+- `/charly-core:deploy` — `charly deploy add`/`del` and deploy configuration.
 - `/charly-internals:plugin` — the plugin/provider model, including the `deploy`
   provider class.
 - [`opencharly/charly`](https://github.com/opencharly/charly) — the charly CLI.

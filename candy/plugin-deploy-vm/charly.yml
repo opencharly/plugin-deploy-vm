@@ -21,7 +21,7 @@ plugin-deploy-vm:
             reverse leg (builders run on the host's podman + scp into the guest; a reboot
             reboots the guest + waits for the boot_id change). It returns the combined
             teardown ops the host records in the install ledger and replays at
-            `charly fleet del`. The vm-substrate sibling of candy/plugin-deploy-local; this
+            `charly deploy del`. The vm-substrate sibling of candy/plugin-deploy-local; this
             plugin owns BOTH the VM lifecycle (boot/destroy/console/ssh + nested
             pod-in-guest) and the plan WALK — no core-side lifecycle hook remains.
         plugin:
