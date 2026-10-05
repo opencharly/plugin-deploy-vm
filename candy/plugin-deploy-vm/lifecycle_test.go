@@ -101,7 +101,7 @@ func TestResolvePriorVmState_ErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestDispatchVmEphemeralTeardown_InvokesFleetProviderWhenEphemeral is the regression test for
+// TestDispatchVmEphemeralTeardown_InvokesDeployProviderWhenEphemeral is the regression test for
 // the FINAL/K5 unit 6a RCA #9 live-probe-caught bug, ported to this plugin (F6 vm-lifecycle move,
 // coneB-vmlifecycle): the ORIGINAL bug was a lookup by the raw deploy name instead of the
 // canonical "vm:"+VmDomainIdentity(name) key. Here the canonical key is threaded automatically —
@@ -111,7 +111,7 @@ func TestResolvePriorVmState_ErrorPropagates(t *testing.T) {
 // DELETED), AND that a non-nil Ephemeral record triggers the
 // OpEphemeralTeardown peer-dispatch to command:deploy with the persisted VmState threaded onto the
 // decoded node.
-func TestDispatchVmEphemeralTeardown_InvokesFleetProviderWhenEphemeral(t *testing.T) {
+func TestDispatchVmEphemeralTeardown_InvokesDeployProviderWhenEphemeral(t *testing.T) {
 	prev := resolvePriorVmState
 	resolvePriorVmState = func(context.Context, *sdk.Executor, string) (*spec.VmDeployState, error) {
 		return &spec.VmDeployState{
@@ -254,7 +254,7 @@ func TestVmEntityForPrepare(t *testing.T) {
 // TestVmPrepareVenue_MalformedNodeErrors is the break-it-proven regression test for the
 // bed-robustness batch item 4 discarded-decode-errors audit: vmPrepareVenue used to
 // `_ = json.Unmarshal(p.Node, &node)`, silently discarding a decode failure and proceeding with a
-// zero-value FleetNode — masking a real request-corruption bug behind a confusing downstream
+// zero-value DeployNode — masking a real request-corruption bug behind a confusing downstream
 // "no vm: cross-ref" error instead of a loud, attributable "decode node" one. The node decode is the
 // very FIRST statement in vmPrepareVenue (before any executor use), so this exercises the REAL
 // function directly with a nil executor and malformed JSON — no mock/broker needed.
