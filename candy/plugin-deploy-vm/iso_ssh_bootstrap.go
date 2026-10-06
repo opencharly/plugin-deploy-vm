@@ -57,15 +57,22 @@ func EnsureIsoGuestSSH(ctx context.Context, ssh kit.SSHArgs, vm *spec.ResolvedVm
 
 	// Console login: a text TTY (mirrors bootstrap_ssh's ctrl-alt-f3), settle any
 	// half-typed prompt, then authenticate as the install user.
-	console.SendKeys(ctx, "ctrl-alt-f3")
+	//
+	// Every keystroke below is BEST-EFFORT by construction: the console is a blind,
+	// fire-and-forget channel between discrete settle waits, and a dropped keystroke
+	// cannot be recovered mid-sequence — the idempotent SSH probe above is the real
+	// success signal, and a bootstrap that did not take is re-attempted on the next
+	// deploy. The errors are therefore explicitly discarded (errcheck's sanctioned
+	// `_ =` form), not silently ignored by accident.
+	_ = console.SendKeys(ctx, "ctrl-alt-f3")
 	console.WaitSeconds(6)
-	console.SendKeys(ctx, "ret") // settle a half-typed prompt from a prior attempt
+	_ = console.SendKeys(ctx, "ret") // settle a half-typed prompt from a prior attempt
 	console.WaitSeconds(2)
-	console.TypeText(ctx, user)
-	console.SendKeys(ctx, "ret")
+	_ = console.TypeText(ctx, user)
+	_ = console.SendKeys(ctx, "ret")
 	console.WaitSeconds(3)
-	console.TypeText(ctx, pw)
-	console.SendKeys(ctx, "ret")
+	_ = console.TypeText(ctx, pw)
+	_ = console.SendKeys(ctx, "ret")
 	console.WaitSeconds(4)
 
 	// The bootstrap — exactly the commands omarchy-iso-test bootstrap_ssh runs:
@@ -79,11 +86,11 @@ func EnsureIsoGuestSSH(ctx context.Context, ssh kit.SSHArgs, vm *spec.ResolvedVm
 		"echo " + quote(pw) + " | sudo -S systemctl enable --now sshd.service",
 	}
 	for _, line := range lines {
-		console.TypeText(ctx, line)
-		console.SendKeys(ctx, "ret")
+		_ = console.TypeText(ctx, line)
+		_ = console.SendKeys(ctx, "ret")
 		console.WaitSeconds(1)
 	}
-	console.SendKeys(ctx, "ctrl-alt-f1") // back to the graphical session
+	_ = console.SendKeys(ctx, "ctrl-alt-f1") // back to the graphical session
 	return fmt.Sprintf("bootstrap-ssh: enabled sshd + firewall + authorized key for %s via the console", user), nil
 }
 
