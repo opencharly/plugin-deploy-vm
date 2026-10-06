@@ -447,8 +447,8 @@ func vmPrepareVenue(ctx context.Context, exec *sdk.Executor, p lifecycleParams, 
 	// plugin runs out-of-process (it is NOT in go.work's compiled_plugins list), so
 	// deploykit.DeployStateHost — the package var charly's core registers ONLY inside ITS OWN
 	// process at init — is NEVER registered in THIS process: a direct LoadDeployConfigForRead call
-	// here silently, ERRORLESSLY returns an EMPTY FleetConfig on every single invocation
-	// (LoadFleetConfig's `if DeployStateHost == nil { return nil, nil }` fast path), so `prior`
+	// here silently, ERRORLESSLY returns an EMPTY DeployConfig on every single invocation
+	// (LoadDeployConfig's `if DeployStateHost == nil { return nil, nil }` fast path), so `prior`
 	// was ALWAYS nil and the domain was treated as "never created before" on EVERY prepare-venue
 	// call — discarding and RE-CREATING the per-domain disk overlay on every ordinary
 	// `charly deploy add vm:<name>`, silently wiping guest state. The loaderkit reader crosses
