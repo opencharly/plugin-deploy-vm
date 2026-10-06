@@ -25,7 +25,7 @@ var errStopAfterConfigStack = errors.New("stop after config stack")
 // loaderkit.ResolveVmEntityViaExecutor → loaderkit.LoadUnified) fails on EVERY project
 // with `conflicting values "…" and {...} (mismatched types string and struct)` unless
 // the pinned sdk strips the retired key. The strip entered the sdk at v0.2026276.1822;
-// this plugin's OLD pin v0.2026273.207 had none (grep = 0).
+// this plugin's prior pin PREDATED it (grep -c stripRetiredSystemDirectives = 0 there).
 //
 // The test compiles and runs against THIS plugin's pinned sdk (go.mod), so it fails
 // again if the pin is ever moved back below v0.2026276.1822. It drives the exact entry
