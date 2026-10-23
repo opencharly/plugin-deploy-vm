@@ -9,7 +9,12 @@ candy is scanned.
 Canonical files:
 
 - `candy/plugin-deploy-vm/charly.yml` — the `plugin-deploy-vm:` candy entity
-  (`plugin:` block, `plan:` check).
+  (`plugin:` block, `plan:` check) and the routing-only
+  `vm-deploy-target-skill:` `skill:` node it owns.
+- `.agents/skills/vm-deploy-target/SKILL.md` — the `vm-deploy-target` skill's
+  PROSE (the node above carries no body). It sits at the repo root because a
+  skill body resolves against the owning candy's REPO ROOT, and its destination
+  here is measured: this plugin owns the VM lifecycle and the plan walk.
 - `candy/plugin-deploy-vm/plugin.go` — the deploy provider (`NewProvider()` /
   `NewMeta()` / the `Invoke` lifecycle + plan walk).
 - `candy/plugin-deploy-vm/lifecycle.go` — the VM venue lifecycle
@@ -25,9 +30,9 @@ Canonical files:
 
 - `/charly-vm:vm` — `charly vm` commands, `kind: vm` entities, the cloud_image vs
   bootc source types, libvirt/QEMU backends, and VM lifecycle. Load before
-  changing the lifecycle. This candy carries no `skill:` entity of its own; the
-  gap is tracked in
-  [opencharly/opencharly#291](https://github.com/opencharly/opencharly/issues/291).
+  changing the lifecycle. The candy DOES now carry a `skill:` entity of its own
+  (`vm-deploy-target`, authored here and drained from the
+  `layer-charly-internals` carrier).
 - `/charly-internals:vm-deploy-target` — the external VM deploy substrate
   (plugin-deploy-vm, VM boot/readiness, the reverse-channel SSH executor,
   `VmDeployState`). Load before changing the deploy target seams.

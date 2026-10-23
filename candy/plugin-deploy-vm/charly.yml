@@ -34,3 +34,26 @@ plugin-deploy-vm:
               context:
                 - build
               command: "true"
+
+# The `vm-deploy-target` skill — ROUTING ONLY. The prose is the FILE
+# `.agents/skills/vm-deploy-target/SKILL.md` at this repo's root, copied
+# byte-identically (sha256 1529c53453814db0761cae9872d5c43645fa200a0e0ece8707edc821edd29917)
+# from `opencharly/layer-charly-internals` at its `main`; the node carries no
+# `description:`/`content:`, because an in-line body that disagrees with its file is
+# a hard error in the marketplace generator.
+#
+# The body resolves against the OWNING CANDY's repo root (sdk/deploykit's
+# `candyRepoRoot`), which is why it sits at `.agents/skills/` here and not inside
+# `candy/plugin-deploy-vm/`. The destination is measured, never chosen: the VM
+# deploy substrate — the guest lifecycle, the reverse-channel SSH executor and the
+# plan walk — IS this plugin (opencharly/opencharly#611).
+#
+# `family: internals` is carried over UNCHANGED so every
+# `/charly-internals:vm-deploy-target` address survives the move.
+vm-deploy-target-skill:
+    skill:
+        name: vm-deploy-target
+        family: internals
+        owner: plugin-deploy-vm
+        triggers:
+            - "`charly update` / `charly vm *` / VM entities in `vm.yml` or `vm:`"
